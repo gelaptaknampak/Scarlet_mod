@@ -165,7 +165,7 @@ class PartitionedDataset:
                 if isinstance(private_trainset, torchvision.datasets.Caltech256):
                     self.train_targets = private_trainset.y
                 else:
-                    self.train_targets = private_trainset.targets
+                    self.train_targets = np.array(private_trainset.targets)
                 assert self.train_targets is not None
                 self.client_to_indices, class_priors = (
                     client_inner_dirichlet_partition_faster(
@@ -180,7 +180,7 @@ class PartitionedDataset:
                     )
                 )
                 assert not isinstance(testset, torchvision.datasets.Caltech256)
-                test_targets = testset.targets
+                test_targets = np.array(testset.targets)
                 assert test_targets is not None
                 client_to_test_indices, _ = client_inner_dirichlet_partition_faster(
                     targets=test_targets,

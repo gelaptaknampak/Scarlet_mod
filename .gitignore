@@ -175,3 +175,30 @@ cython_debug/
 
 src/data/
 src/outputs/
+
+# datasets
+data/
+dataset/
+*.pkl
+*.pt
+*.pth
+
+# MNIST / EMNIST raw files
+MNIST/
+EMNIST/
+CIFAR-10*
+CIFAR-100*
+tiny-imagenet*
+caltech256*
+
+# logs
+logs/
+*.log
+
+# hydra outputs
+outputs/
+multirun/
+
+# python cache
+__pycache__/
+*.pyc
