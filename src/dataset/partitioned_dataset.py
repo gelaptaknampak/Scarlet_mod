@@ -5,7 +5,6 @@ import pandas as pd
 import torch
 import torchvision
 from fedlab.utils.dataset.functional import balance_split
-from fedlab.contrib.dataset import Subset
 from torch.utils.data import Dataset
 from torchvision import transforms
 from dataclasses import dataclass
@@ -42,6 +41,39 @@ class GrayscaleToRGB(object):
         return img
 
 
+# --- PERBAIKAN 1: SafeToTensor untuk mencegah crash Tensor vs Tensor ---
+class SafeToTensor:
+    def __call__(self, pic):
+        if isinstance(pic, torch.Tensor):
+            if pic.ndim == 2:
+                pic = pic.unsqueeze(0)
+            elif pic.ndim == 3 and pic.shape[2] in [1, 3]:
+                pic = pic.permute(2, 0, 1)
+            
+            if pic.dtype == torch.uint8:
+                return pic.float() / 255.0
+            return pic.float()
+        
+        return transforms.functional.to_tensor(pic)
+
+
+# --- PERBAIKAN 2: CustomSubset untuk menggantikan fedlab Subset yang buggy ---
+class CustomSubset(Dataset):
+    def __init__(self, dataset, indices, transform=None):
+        self.dataset = dataset
+        self.indices = indices
+        self.transform = transform
+
+    def __getitem__(self, idx):
+        img, label = self.dataset[self.indices[idx]]
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, label
+
+    def __len__(self):
+        return len(self.indices)
+
+
 @dataclass
 class PartitionedDataset:
     data_dir: Path
@@ -66,32 +98,32 @@ class PartitionedDataset:
         self._prepare()
 
     def _get_transform(self, task: str, train: bool):
-        image_size = ORIGINAL_IMAGE_SIZE[self.private_task]
+        # --- PERBAIKAN 3: Normalisasi Dinamis & Aman untuk Semua Dataset ---
         image_size = ORIGINAL_IMAGE_SIZE[task]
+        if image_size is None:
+            image_size = 64  # Default untuk caltech256
+            
+        num_channels = 1 if task in ["mnist", "emnist"] else 3
+        
         transform_list = [
-            transforms.ToTensor(),
+            SafeToTensor(),
             transforms.Resize((image_size, image_size)),
-            transforms.Normalize((0.5,), (0.5,)),
+            transforms.Normalize((0.5,) * num_channels, (0.5,) * num_channels),
         ]
+        
         if train:
             padding = 8 if image_size == 64 else 4
 
             if task in ["mnist", "emnist"]:
-                transform_list[2:2] = [
-                    transforms.RandomCrop(image_size, padding=padding),
-                ]
+                transform_list.insert(2, transforms.RandomCrop(image_size, padding=padding))
             else:
-                transform_list[2:2] = [
-                    transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomCrop(image_size, padding=padding),
-                ]
+                transform_list.insert(2, transforms.RandomHorizontalFlip(p=0.5))
+                transform_list.insert(3, transforms.RandomCrop(image_size, padding=padding))
 
             if task == "caltech256":
                 transform_list = [GrayscaleToRGB()] + transform_list
 
-        transform = transforms.Compose(transform_list)
-
-        return transform
+        return transforms.Compose(transform_list)
 
     def _get_dataset(self, task: str, split: str = "train"):
         root = f"{ROOT_DIR}/{task}/"
@@ -161,6 +193,7 @@ class PartitionedDataset:
         public_val_transform = self._get_transform(task=self.public_task, train=False)
         testset = self._get_dataset(task=self.private_task, split="test")
         test_transform = self._get_transform(task=self.private_task, train=False)
+        
         match self.partition:
             case "client_inner_dirichlet":
                 if isinstance(private_trainset, torchvision.datasets.Caltech256):
@@ -209,8 +242,9 @@ class PartitionedDataset:
             )
             val_indices = list(set(indices) - set(train_indices))
 
+            # --- PERBAIKAN 4: Menggunakan CustomSubset di semua tempat ---
             torch.save(
-                Subset(
+                CustomSubset(
                     dataset=private_trainset,
                     indices=list(train_indices),
                     transform=private_train_transform,
@@ -218,7 +252,7 @@ class PartitionedDataset:
                 train_dir.joinpath(f"{client_id}.pkl"),
             )
             torch.save(
-                Subset(
+                CustomSubset(
                     dataset=private_trainset,
                     indices=val_indices,
                     transform=test_transform,
@@ -232,19 +266,29 @@ class PartitionedDataset:
             client_to_test_indices.items(), desc="Saving test data"
         ):
             torch.save(
-                Subset(
+                CustomSubset(
                     dataset=testset, indices=list(indices), transform=test_transform
                 ),
                 test_dir.joinpath(f"{client_id}.pkl"),
             )
 
         torch.save(
-            Subset(
+            CustomSubset(
                 dataset=testset,
                 indices=range(len(testset)),
                 transform=test_transform,
             ),
             self.data_dir.joinpath("test.pkl"),
+        )
+        
+        # Simpan dataset utuh untuk kebutuhan centralized baseline jika dipanggil
+        torch.save(
+            CustomSubset(
+                dataset=private_trainset,
+                indices=range(len(private_trainset)),
+                transform=private_train_transform,
+            ),
+            self.data_dir.joinpath("centralized.pkl"),
         )
 
         public_indices = random.sample(range(len(public_trainset)), self.public_size)
@@ -254,6 +298,7 @@ class PartitionedDataset:
             replace=False,
         )
         public_val_indices = list(set(public_indices) - set(public_train_indices))
+        
         if isinstance(public_trainset, torchvision.datasets.Caltech256):
             public_subset = Caltech256Subset(
                 dataset=public_trainset,
@@ -266,16 +311,17 @@ class PartitionedDataset:
                 transform=public_val_transform,
             )
         else:
-            public_subset = Subset(
+            public_subset = CustomSubset(
                 dataset=public_trainset,
                 indices=public_train_indices,
                 transform=public_train_transform,
             )
-            public_val_subset = Subset(
+            public_val_subset = CustomSubset(
                 dataset=public_trainset,
                 indices=public_val_indices,
                 transform=public_val_transform,
             )
+            
         torch.save(
             public_subset,
             self.data_dir.joinpath("public_train.pkl"),
@@ -325,7 +371,7 @@ class PartitionedDataset:
         return dataset
 
 
-class Caltech256Subset(Subset):
+class Caltech256Subset(CustomSubset):
     def __init__(
         self,
         dataset: torchvision.datasets.Caltech256,
@@ -335,13 +381,13 @@ class Caltech256Subset(Subset):
         save_image_size=64,
     ):
         self.data = []
-        self.labels = []  # Tambahkan list untuk menampung label asli
+        self.labels = []  
         pre_transform = transforms.Compose(
             [transforms.Resize(save_image_size)]
-        )  # for saving memory
+        ) 
         
         for idx in indices:
-            img, label = dataset[idx]  # Ambil image DAN label asli dari dataset
+            img, label = dataset[idx] 
             self.data.append(pre_transform(img))
             self.labels.append(label)
             
@@ -351,7 +397,7 @@ class Caltech256Subset(Subset):
 
     def __getitem__(self, index):
         img = self.data[index]
-        label = self.labels[index]  # Gunakan label asli yang sudah disimpan
+        label = self.labels[index] 
 
         if self.transform is not None:
             img = self.transform(img)
@@ -359,9 +405,6 @@ class Caltech256Subset(Subset):
             label = self.target_transform(label)
 
         return img, label
-
-    def __len__(self):
-        return len(self.indices)
 
 
 class NonLabelDataset(Dataset):
@@ -389,30 +432,11 @@ def client_inner_dirichlet_partition_faster(
     verbose=True,
     class_priors: Optional[np.ndarray] = None,
 ):
-    """Non-iid Dirichlet partition.
-
-    The method is from The method is from paper `Federated Learning Based on Dynamic Regularization <https://openreview.net/forum?id=B7v4QMR6Z9w>`_.
-    This function can be used by given specific sample number for all clients ``client_sample_nums``.
-    It's different from :func:`hetero_dir_partition`.
-
-    Args:
-        targets (list or numpy.ndarray): Sample targets.
-        num_clients (int): Number of clients for partition.
-        num_classes (int): Number of classes in samples.
-        dir_alpha (float): Parameter alpha for Dirichlet distribution.
-        client_sample_nums (numpy.ndarray): A numpy array consisting ``num_clients`` integer elements, each represents sample number of corresponding clients.
-        verbose (bool, optional): Whether to print partition process. Default as ``True``.
-
-    Returns:
-        dict: ``{ client_id: indices}``.
-
-    Note:
-        Adapted from https://github.com/SMILELab-FL/FedLab/blob/master/fedlab/utils/dataset/functional.py
-    """  # noqa: E501
+    """Non-iid Dirichlet partition."""  
     if not isinstance(targets, np.ndarray):
         targets = np.array(targets)
 
-    if class_priors is None:  # CHANGED: use given class_priors if provided
+    if class_priors is None:  
         class_priors = np.random.dirichlet(
             alpha=[dir_alpha] * num_classes, size=num_clients
         )
@@ -426,7 +450,6 @@ def client_inner_dirichlet_partition_faster(
 
     while np.sum(client_sample_nums) != 0:
         curr_cid = np.random.randint(num_clients)
-        # If current node is full resample a client
         if verbose:
             print("Remaining Data: %d" % np.sum(client_sample_nums))
         if client_sample_nums[curr_cid] <= 0:
@@ -435,9 +458,7 @@ def client_inner_dirichlet_partition_faster(
         curr_prior = prior_cumsum[curr_cid]
         while True:
             curr_class = np.argmax(np.random.uniform() <= curr_prior)
-            # Redraw class label if no rest in current class samples
             if class_amount[curr_class] <= 0:
-                # Exception handling: If the current class has no samples left, randomly select a non-zero class # noqa: E501
                 while True:
                     new_class = np.random.randint(num_classes)
                     if class_amount[new_class] > 0:
