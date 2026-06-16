@@ -63,6 +63,9 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
     def update_cache(
         self, indices: torch.Tensor, probs: torch.Tensor, stale_indices: torch.Tensor
     ):
+        self.round_entropy = []
+        self.round_freshness = []
+        self.round_ttl = []
         if stale_indices.numel() != 0:
             for index in stale_indices:
                 self.cache[int(index.item())] = None
@@ -335,6 +338,8 @@ class SCARLETServerHandler(DSFLServerHandler):
         cache_ratio: float,
         cache_duration_min: int,
         cache_duration_max: int,
+        cache_mode: str,  # adaptive | static
+        cache_duration: int,
         analysis_dir: Path,
     ):
         super(DSFLServerHandler, self).__init__(
@@ -348,6 +353,8 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.cache_ratio = cache_ratio
         self.cache_duration_min = cache_duration_min
         self.cache_duration_max = cache_duration_max
+        self.cache_mode = cache_mode
+        self.cache_duration = cache_duration
         self.cache: list[ServerCache] = [
             ServerCache(prob=None, round=0, ttl=0)
             for _ in range(self.dataset.public_size)
@@ -477,6 +484,95 @@ class SCARLETServerHandler(DSFLServerHandler):
             self.public_probs = torch.stack(not_already_cached_probs)
         self.new_cache = torch.tensor([cache.value for cache in new_cache])
 
+        # =========================
+        # CACHE LOGGING
+        # =========================
+
+        cache_hit = sum(
+            1 for c in new_cache
+            if c == CacheType.ALREADY_HIT
+        )
+
+        cache_new = sum(
+            1 for c in new_cache
+            if c == CacheType.NEWLY_HIT
+        )
+
+        cache_miss = sum(
+            1 for c in new_cache
+            if c == CacheType.NOT_HIT
+        )
+
+        cache_expired = sum(
+            1 for c in new_cache
+            if c == CacheType.EXPIRED
+        )
+
+        cache_size = sum(
+            1 for c in self.cache
+            if c.prob is not None
+        )
+
+        total_requests = (
+            cache_hit +
+            cache_new +
+            cache_miss +
+            cache_expired
+        )
+
+        hit_rate = (
+            cache_hit / total_requests
+            if total_requests > 0
+            else 0.0
+        )
+
+        active_ttls = [
+            c.ttl
+            for c in self.cache
+            if c.prob is not None
+        ]
+
+        avg_ttl = (
+            np.mean(active_ttls)
+            if len(active_ttls) > 0
+            else 0.0
+        )
+
+        avg_entropy = (
+            np.mean(self.round_entropy)
+            if len(self.round_entropy) > 0
+            else 0.0
+        )
+
+        avg_freshness = (
+            np.mean(self.round_freshness)
+            if len(self.round_freshness) > 0
+            else 0.0
+        )
+
+        avg_new_ttl = (
+            np.mean(self.round_ttl)
+            if len(self.round_ttl) > 0
+            else 0.0
+        )
+
+        print(
+            f"[Round {self.round}] "
+            f"Mode={self.cache_mode} | "
+            f"CacheSize={cache_size} | "
+            f"Hit={cache_hit} | "
+            f"Miss={cache_miss} | "
+            f"Expired={cache_expired} | "
+            f"New={cache_new} | "
+            f"HitRate={hit_rate:.4f} | "
+            f"AvgTTL={avg_ttl:.2f} | "
+            f"AvgNewTTL={avg_new_ttl:.2f} | "
+            f"AvgEntropy={avg_entropy:.4f} | "
+            f"AvgFreshness={avg_freshness:.4f}"
+        )
+
+        # =========================
+
         with open(self.csv_path, "a") as f:
             writer = csv.writer(f)
             writer.writerow(self.metrics.values())
@@ -588,9 +684,13 @@ class SCARLETServerHandler(DSFLServerHandler):
     
     def calculate_adaptive_ttl(self, prob):
 
-        h_norm = self.calculate_entropy(prob)
+        entropy = self.calculate_entropy(prob)
 
-        freshness = 1.0 - h_norm
+        freshness = 1.0 - entropy
+
+        self.round_entropy.append(entropy)
+        self.round_freshness.append(freshness)
+        self.round_ttl.append(ttl)
 
         ttl = (
             self.cache_duration_min
@@ -604,6 +704,14 @@ class SCARLETServerHandler(DSFLServerHandler):
             self.cache_duration_min,
             int(round(ttl))
         )
+    
+    def get_cache_ttl(self, prob):
+
+        if self.cache_mode == "static":
+            return self.cache_duration_max
+
+        return self.calculate_adaptive_ttl(prob)
+
 
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
@@ -612,16 +720,20 @@ class SCARLETServerHandler(DSFLServerHandler):
         for i in indices:
             if self.cache[i].prob is None:
                 candidate_indices.append(i)
+        num_selected = max(
+            1,
+            int(self.cache_ratio * len(candidate_indices))
+        )
         selected_indices = np.random.choice(
             candidate_indices,
-            int(self.cache_ratio * len(candidate_indices)),
+            num_selected,
             replace=False,
         )
         new_cache = []
         for i, prob in zip(indices, probs):
             if self.cache[i].prob is None:
                 if i in selected_indices:
-                    ttl = self.calculate_adaptive_ttl(prob)
+                    ttl = self.get_cache_ttl(prob)
                     self.cache[i] = ServerCache(prob=prob, round=self.round, ttl=ttl)
                     new_cache.append(CacheType.NEWLY_HIT)
                 else:

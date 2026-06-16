@@ -1,4 +1,9 @@
 name: "scarlet"
 era_exponent: 1.0
 cache_ratio: 1.0
+cache_mode: adaptive
+
 cache_duration: 50
+
+cache_duration_min: 10
+cache_duration_max: 100
