@@ -67,8 +67,10 @@ class PartitionedDataset:
 
     def _get_transform(self, task: str, train: bool):
         image_size = ORIGINAL_IMAGE_SIZE[self.private_task]
+        image_size = ORIGINAL_IMAGE_SIZE[task]
         transform_list = [
             transforms.ToTensor(),
+            transforms.Resize((image_size, image_size)),
             transforms.Normalize((0.5,), (0.5,)),
         ]
         if train:
@@ -210,7 +212,7 @@ class PartitionedDataset:
             torch.save(
                 Subset(
                     dataset=private_trainset,
-                    indices=list(indices),
+                    indices=list(train_indices),
                     transform=private_train_transform,
                 ),
                 train_dir.joinpath(f"{client_id}.pkl"),
@@ -333,18 +335,23 @@ class Caltech256Subset(Subset):
         save_image_size=64,
     ):
         self.data = []
+        self.labels = []  # Tambahkan list untuk menampung label asli
         pre_transform = transforms.Compose(
             [transforms.Resize(save_image_size)]
         )  # for saving memory
+        
         for idx in indices:
-            self.data.append(pre_transform(dataset[idx][0]))
+            img, label = dataset[idx]  # Ambil image DAN label asli dari dataset
+            self.data.append(pre_transform(img))
+            self.labels.append(label)
+            
         self.indices = indices
         self.transform = transform
         self.target_transform = target_transform
 
     def __getitem__(self, index):
         img = self.data[index]
-        label = self.indices[index]
+        label = self.labels[index]  # Gunakan label asli yang sudah disimpan
 
         if self.transform is not None:
             img = self.transform(img)
