@@ -69,13 +69,17 @@ def clean_up(dirs: Union[list[Path], Path]):
     for dir in dirs:
         shutil.rmtree(dir)
 
+import subprocess
 
 def get_git_commit_hash() -> str:
-    return (
-        subprocess.check_output(["git", "rev-parse", "--short", "HEAD"])
-        .strip()
-        .decode("utf-8")
+    try:
+        return (
+            subprocess.check_output(["git", "rev-parse", "--short", "HEAD"])
+            .strip()
+            .decode("utf-8")
     )
+    except Exception:
+        return "unknown"
 
 
 def get_cuda_info() -> str:

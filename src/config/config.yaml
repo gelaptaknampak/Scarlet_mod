@@ -1,7 +1,7 @@
-private_task: cifar10
-public_task: cifar100
-server_model: resnet20
-client_model: resnet20
+private_task: mnist
+public_task: emnist
+server_model: lenet5
+client_model: lenet5
 partition: client_inner_dirichlet
 dir_alpha: 0.3
 seed: 42

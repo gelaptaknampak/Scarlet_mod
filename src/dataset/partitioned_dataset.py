@@ -21,6 +21,8 @@ CLASS_NUM = {
     "cifar100": 100,
     "tiny-imagenet-200": 200,
     "caltech256": 257,
+    "mnist": 10,
+    "emnist": 26,   # kalau split letters
 }
 
 ORIGINAL_IMAGE_SIZE = {
@@ -28,6 +30,8 @@ ORIGINAL_IMAGE_SIZE = {
     "cifar100": 32,
     "tiny-imagenet-200": 64,
     "caltech256": None,
+    "mnist": 28,
+    "emnist": 28,
 }
 
 
@@ -66,14 +70,20 @@ class PartitionedDataset:
         transform_list = [
             transforms.ToTensor(),
             transforms.Resize((image_size, image_size)),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            transforms.Normalize((0.5,), (0.5,)),
         ]
         if train:
             padding = 8 if image_size == 64 else 4
-            transform_list[2:2] = [
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomCrop(image_size, padding=padding),
-            ]
+
+            if task in ["mnist", "emnist"]:
+                transform_list[2:2] = [
+                    transforms.RandomCrop(image_size, padding=padding),
+                ]
+            else:
+                transform_list[2:2] = [
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.RandomCrop(image_size, padding=padding),
+                ]
 
             if task == "caltech256":
                 transform_list = [GrayscaleToRGB()] + transform_list
@@ -85,6 +95,21 @@ class PartitionedDataset:
     def _get_dataset(self, task: str, split: str = "train"):
         root = f"{ROOT_DIR}/{task}/"
         match task:
+            case "mnist":
+                return torchvision.datasets.MNIST(
+                    root=root,
+                    train=split=="train",
+                    download=True
+                )
+
+            case "emnist":
+                return torchvision.datasets.EMNIST(
+                    root=root,
+                    split="letters",   # atau balanced
+                    train=split=="train",
+                    download=True
+                )
+
             case "cifar10":
                 return torchvision.datasets.CIFAR10(
                     root=root, train=split == "train", download=True
