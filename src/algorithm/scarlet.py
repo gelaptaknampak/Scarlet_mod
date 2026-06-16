@@ -726,7 +726,7 @@ class SCARLETServerHandler(DSFLServerHandler):
     def get_cache_ttl(self, prob):
 
         if self.cache_mode == "static":
-            return self.cache_duration_max
+            return self.cache_duration_duration
 
         return self.calculate_adaptive_ttl(prob)
 
