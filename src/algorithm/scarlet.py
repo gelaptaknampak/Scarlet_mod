@@ -388,6 +388,9 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.public_val_probs = torch.empty(0)
         self.public_val_indices = torch.empty(0)
         self.next_public_val_indices = torch.empty(0)
+        self.round_entropy = []
+        self.round_freshness = []
+        self.round_ttl = []
 
         self.set_next_public_indices()
     
@@ -425,6 +428,9 @@ class SCARLETServerHandler(DSFLServerHandler):
     def global_update(self, buffer: list[list[torch.Tensor]]) -> None:  # noqa: C901
         probs_list = [ele[0] for ele in buffer]
         indices_list = [ele[1] for ele in buffer]
+        self.round_entropy = []
+        self.round_freshness = []
+        self.round_ttl = []
 
         public_probs_stack = defaultdict(list)
         for probs, indices in zip(probs_list, indices_list):
@@ -700,10 +706,6 @@ class SCARLETServerHandler(DSFLServerHandler):
 
         freshness = 1.0 - entropy
 
-        self.round_entropy.append(entropy)
-        self.round_freshness.append(freshness)
-        self.round_ttl.append(ttl)
-
         ttl = (
             self.cache_duration_min
             +
@@ -711,6 +713,10 @@ class SCARLETServerHandler(DSFLServerHandler):
             - self.cache_duration_min)
             * freshness
         )
+
+        self.round_entropy.append(entropy)
+        self.round_freshness.append(freshness)
+        self.round_ttl.append(ttl)
 
         return max(
             self.cache_duration_min,
