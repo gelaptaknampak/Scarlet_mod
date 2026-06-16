@@ -343,7 +343,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         analysis_dir: Path,
     ):
         super(DSFLServerHandler, self).__init__(
-            model_name, global_round, sample_ratio, cuda, public_size_per_round, dataset
+            model_name, global_round, sample_ratio, cuda, public_size_per_round, era_exponent, dataset
         )
         self.public_probs = torch.empty(0)
         self.public_indices = torch.empty(0)

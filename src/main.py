@@ -112,7 +112,7 @@ def main(cfg: DictConfig) -> None:  # noqa: C901
                 sample_ratio=cfg.sample_ratio,
                 cuda=torch.cuda.is_available(),
                 public_size_per_round=cfg.public_size_per_round,
-                dataset=dataset,
+                dataset=partitioned_dataset,
                 era_exponent=cfg.algorithm.era_exponent,
                 cache_ratio=cfg.algorithm.cache_ratio,
 
