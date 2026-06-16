@@ -342,8 +342,14 @@ class SCARLETServerHandler(DSFLServerHandler):
         cache_duration: int,
         analysis_dir: Path,
     ):
-        super(DSFLServerHandler, self).__init__(
-            model_name, global_round, sample_ratio, cuda, public_size_per_round, era_exponent, dataset
+        super().__init__(
+            model_name,
+            global_round,
+            sample_ratio,
+            cuda,
+            public_size_per_round,
+            era_exponent,
+            dataset,
         )
         self.public_probs = torch.empty(0)
         self.public_indices = torch.empty(0)
@@ -390,7 +396,13 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.sampled_clients = super().sample_clients()
         return self.sampled_clients
 
-    def set_next_public_indices(self) -> None:
+    def set_next_public_indices(self):
+        if not hasattr(self, "cache"):
+            super().set_next_public_indices()
+            return
+
+        super().set_next_public_indices()
+
         super().set_next_public_indices()
         next_request_indices = []
         self.next_cached_indices = []

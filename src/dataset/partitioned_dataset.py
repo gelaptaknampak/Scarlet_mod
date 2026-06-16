@@ -69,7 +69,6 @@ class PartitionedDataset:
         image_size = ORIGINAL_IMAGE_SIZE[self.private_task]
         transform_list = [
             transforms.ToTensor(),
-            transforms.Resize((image_size, image_size)),
             transforms.Normalize((0.5,), (0.5,)),
         ]
         if train:
