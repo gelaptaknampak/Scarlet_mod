@@ -193,7 +193,6 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             writer.writerow(self.metrics.values())
         self.metrics = OrderedDict.fromkeys(self.metrics.keys(), None)
 
-
 def scarlet_client_worker(
     device: str,
     client_id: int,
@@ -320,6 +319,7 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
 class ServerCache(NamedTuple):
     prob: torch.Tensor | None
     round: int
+    ttl: int
 
 
 class SCARLETServerHandler(DSFLServerHandler):
@@ -333,7 +333,8 @@ class SCARLETServerHandler(DSFLServerHandler):
         dataset: PartitionedDataset,
         era_exponent: float,
         cache_ratio: float,
-        cache_duration: int,
+        cache_duration_min: int,
+        cache_duration_max: int,
         analysis_dir: Path,
     ):
         super(DSFLServerHandler, self).__init__(
@@ -345,9 +346,11 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.new_cache = torch.empty(0)
         self.era_exponent = era_exponent
         self.cache_ratio = cache_ratio
-        self.cache_duration = cache_duration
+        self.cache_duration_min = cache_duration_min
+        self.cache_duration_max = cache_duration_max
         self.cache: list[ServerCache] = [
-            ServerCache(prob=None, round=0) for _ in range(self.dataset.public_size)
+            ServerCache(prob=None, round=0, ttl=0)
+            for _ in range(self.dataset.public_size)
         ]
         self.client_mock_caches: list[list[torch.Tensor | None]] = [
             [None for _ in range(self.dataset.public_size)]
@@ -374,7 +377,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.next_public_val_indices = torch.empty(0)
 
         self.set_next_public_indices()
-
+    
     @override
     def sample_clients(self):
         self.sampled_clients = super().sample_clients()
@@ -388,7 +391,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         for i in next_public_indices:
             if (
                 self.cache[i].prob is not None
-                and self.cache[i].round + self.cache_duration > self.round
+                and self.cache[i].round + self.cache[i].ttl > self.round
             ):
                 self.next_cached_indices.append(i)
             else:
@@ -571,6 +574,37 @@ class SCARLETServerHandler(DSFLServerHandler):
                 else torch.empty(0),
             ]
 
+    def calculate_entropy(self, prob):
+        eps = 1e-12
+
+        entropy = -torch.sum(
+            prob * torch.log(prob + eps)
+        )
+
+        max_entropy = np.log(prob.shape[0])
+
+        return float(entropy / max_entropy)
+
+    
+    def calculate_adaptive_ttl(self, prob):
+
+        h_norm = self.calculate_entropy(prob)
+
+        freshness = 1.0 - h_norm
+
+        ttl = (
+            self.cache_duration_min
+            +
+            (self.cache_duration_max
+            - self.cache_duration_min)
+            * freshness
+        )
+
+        return max(
+            self.cache_duration_min,
+            int(round(ttl))
+        )
+
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
     ) -> list[CacheType]:
@@ -587,15 +621,16 @@ class SCARLETServerHandler(DSFLServerHandler):
         for i, prob in zip(indices, probs):
             if self.cache[i].prob is None:
                 if i in selected_indices:
-                    self.cache[i] = ServerCache(prob=prob, round=self.round)
+                    ttl = self.calculate_adaptive_ttl(prob)
+                    self.cache[i] = ServerCache(prob=prob, round=self.round, ttl=ttl)
                     new_cache.append(CacheType.NEWLY_HIT)
                 else:
                     new_cache.append(CacheType.NOT_HIT)
             else:
-                if self.round - self.cache[i].round <= self.cache_duration:
+                if self.round - self.cache[i].round <= self.cache[i].ttl:
                     new_cache.append(CacheType.ALREADY_HIT)
                 else:
-                    self.cache[i] = ServerCache(prob=None, round=self.round)
+                    self.cache[i] = ServerCache(prob=None, round=self.round, ttl=0)
                     new_cache.append(CacheType.EXPIRED)
         return new_cache
 
