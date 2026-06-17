@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, Subset
 import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
+import logging
 
 from algorithm.dsfl import (
     DSFLClientWorkerProcess,
@@ -34,9 +35,9 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             None for _ in range(self.dataset.public_size)
         ]
         if self.state_dict_path.exists():
-            self.cache = torch.load(self.state_dict_path)["cache"]
+            self.cache = torch.load(self.state_dict_path, weights_only=False)["cache"]
             self.kd_optimizer.load_state_dict(
-                torch.load(self.state_dict_path)["kd_optimizer"]
+                torch.load(self.state_dict_path, weights_only=False)["kd_optimizer"]
             )
 
         self.metrics_dir = self.analysis_dir.joinpath("metrics")
@@ -351,6 +352,11 @@ class SCARLETServerHandler(DSFLServerHandler):
             era_exponent,
             dataset,
         )
+        # ==========================================
+        # TAMBAHKAN 2 BARIS INI DI SINI:
+        self.cuda = cuda and torch.cuda.is_available()
+        self.device = torch.device("cuda" if self.cuda else "cpu")
+        # ==========================================
         self.public_probs = torch.empty(0)
         self.public_indices = torch.empty(0)
         self.next_public_indices = torch.empty(0)
@@ -574,7 +580,10 @@ class SCARLETServerHandler(DSFLServerHandler):
             else 0.0
         )
 
-        print(
+        # =========================
+        # GANTI print DI SINI MENJADI logging.info
+        # =========================
+        logging.info(
             f"[Round {self.round}] "
             f"Mode={self.cache_mode} | "
             f"CacheSize={cache_size} | "
@@ -588,7 +597,6 @@ class SCARLETServerHandler(DSFLServerHandler):
             f"AvgEntropy={avg_entropy:.4f} | "
             f"AvgFreshness={avg_freshness:.4f}"
         )
-
         # =========================
 
         with open(self.csv_path, "a") as f:

@@ -1,0 +1,18 @@
+# Dependensi Utama
+torch>=2.7.0
+torchvision>=0.18.0
+fedlab>=1.3.0
+tensorboard==2.16.2
+numpy<2
+types-tqdm>=4.66.0.20240417
+scikit-learn>=1.5.1
+hydra-core>=1.3.2
+fast-pytorch-kmeans>=0.2.2
+psutil>=6.1.1
+gdown>=5.2.0
+
+# Dependensi Pengembangan (Dev Dependencies)
+mypy>=1.11.1
+ruff>=0.5.7
+black>=24.8.0
+pytest>=8.3.2

@@ -27,7 +27,7 @@ def get_random_state() -> dict:
         "numpy": np.random.get_state(),
         "torch": {
             "manual_seed": torch.initial_seed(),
-            "cuda_manual_seed": torch.cuda.initial_seed(),
+            "cuda_manual_seed": torch.cuda.initial_seed() if torch.cuda.is_available() else None,
             "cudnn_deterministic": torch.backends.cudnn.deterministic,
             "cudnn_benchmark": torch.backends.cudnn.benchmark,
         },

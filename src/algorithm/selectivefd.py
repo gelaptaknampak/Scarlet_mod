@@ -52,12 +52,12 @@ class SelectiveFDClientWorkerProcess(DSFLClientWorkerProcess):
                 None for _ in range(self.dataset.public_size)
             ]
         if self.state_dict_path.exists():
-            self.outlier_public_indices = torch.load(self.state_dict_path)[
+            self.outlier_public_indices = torch.load(self.state_dict_path, weights_only=False)[
                 "outlier_public_indices"
             ]
             self.save_dict["outlier_public_indices"] = self.outlier_public_indices
             if self.cache_enabled:
-                self.cache = torch.load(self.state_dict_path)["cache"]
+                self.cache = torch.load(self.state_dict_path, weights_only=False)["cache"]
         else:
             if self.device.startswith("cuda"):
                 # avoid CUDA out of memory
@@ -102,7 +102,7 @@ class SelectiveFDClientWorkerProcess(DSFLClientWorkerProcess):
                 y=y,
                 gaussian_kernel_width=self.gaussian_kernel_width,
                 lambda_=len(trainset) ** self.lambda_exponent,
-                device=torch.device(self.device),
+                device=CUDA_VISIBLE_DEVICES(self.device),
             )
             eval_data = []
             for j in shuffled_indices[int(len(shuffled_indices) * 0.9) :]:

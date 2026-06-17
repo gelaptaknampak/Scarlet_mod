@@ -33,7 +33,8 @@ class COMETClientWorkerProcess(DSFLClientWorkerProcess):
             ]
         if self.state_dict_path.exists():
             if self.cache_enabled:
-                self.cache = torch.load(self.state_dict_path)["cache"]
+                self.cache = torch.load(self.state_dict_path, weights_only=False)["cache"]
+
 
     def get_best_centroids(
         self, public_centroids: torch.Tensor, public_indices: torch.Tensor

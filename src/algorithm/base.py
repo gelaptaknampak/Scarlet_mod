@@ -32,7 +32,7 @@ class BaseClientWorkerProcess:
     def prepare(self, device: str, client_id: int, dataset: PartitionedDataset):
         self.state_dict_path = self.state_dict_dir.joinpath(f"{client_id}.pt")
         if self.state_dict_path.exists():
-            set_random_state(torch.load(self.state_dict_path)["random_state"])
+            set_random_state(torch.load(self.state_dict_path, weights_only=False)["random_state"])
         else:
             seed_everything(self.seed)
         self.device = device
@@ -47,9 +47,9 @@ class BaseClientWorkerProcess:
         )
         self.criterion = get_criterion(self.criterion_name)
         if self.state_dict_path.exists():
-            self.model.load_state_dict(torch.load(self.state_dict_path)["model"])
+            self.model.load_state_dict(torch.load(self.state_dict_path, weights_only=False)["model"])
             self.optimizer.load_state_dict(
-                torch.load(self.state_dict_path)["optimizer"]
+                torch.load(self.state_dict_path, weights_only=False)["optimizer"]
             )
         self.save_dict: dict = {}
 

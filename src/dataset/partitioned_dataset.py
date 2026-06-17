@@ -333,39 +333,39 @@ class PartitionedDataset:
 
     def get_private_train_dataset(self, client_id: int) -> Dataset:
         dataset = torch.load(
-            self.data_dir.joinpath("private_train").joinpath(f"{client_id}.pkl")
+            self.data_dir.joinpath("private_train").joinpath(f"{client_id}.pkl"), weights_only=False
         )
         assert isinstance(dataset, Dataset)
         return dataset
 
     def get_private_validation_dataset(self, client_id: int) -> Dataset:
         dataset = torch.load(
-            self.data_dir.joinpath("validation").joinpath(f"{client_id}.pkl")
+            self.data_dir.joinpath("validation").joinpath(f"{client_id}.pkl"), weights_only=False
         )
         assert isinstance(dataset, Dataset)
         return dataset
 
     def get_public_train_dataset(self) -> Dataset:
-        dataset = torch.load(self.data_dir.joinpath("public_train.pkl"))
+        dataset = torch.load(self.data_dir.joinpath("public_train.pkl"), weights_only=False)
         assert isinstance(dataset, Dataset)
         return dataset
 
     def get_public_validation_dataset(self) -> Dataset:
-        dataset = torch.load(self.data_dir.joinpath("public_validation.pkl"))
+        dataset = torch.load(self.data_dir.joinpath("public_validation.pkl"), weights_only=False)
         assert isinstance(dataset, Dataset)
         return dataset
 
     def get_whole_train_dataset(self) -> Dataset:
-        dataset = torch.load(self.data_dir.joinpath("centralized.pkl"))
+        dataset = torch.load(self.data_dir.joinpath("centralized.pkl"), weights_only=False)
         assert isinstance(dataset, Dataset)
         return dataset
 
     def get_test_dataset(self, client_id: Optional[int] = None) -> Dataset:
         if client_id is None:
-            dataset = torch.load(self.data_dir.joinpath("test.pkl"))
+            dataset = torch.load(self.data_dir.joinpath("test.pkl"), weights_only=False)
         else:
             dataset = torch.load(
-                self.data_dir.joinpath("test").joinpath(f"{client_id}.pkl")
+                self.data_dir.joinpath("test").joinpath(f"{client_id}.pkl"), weights_only=False
             )
         assert isinstance(dataset, Dataset)
         return dataset

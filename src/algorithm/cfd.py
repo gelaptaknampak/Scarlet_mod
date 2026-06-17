@@ -29,7 +29,7 @@ class CFDClientWorkerProcess(DSFLClientWorkerProcess):
                 None for _ in range(self.dataset.public_size)
             ]
             if self.state_dict_path.exists():
-                self.cache = torch.load(self.state_dict_path)["cache"]
+                self.cache = torch.load(self.state_dict_path, weights_only=False)["cache"]
 
     def set_cache(self, new_cache: torch.Tensor):
         self.new_cache_list = new_cache.tolist()

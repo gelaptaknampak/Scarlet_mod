@@ -32,7 +32,7 @@ class DSFLClientWorkerProcess(BaseClientWorkerProcess):
         self.kd_criterion = get_criterion(self.kd_criterion_name)
         if self.state_dict_path.exists():
             self.kd_optimizer.load_state_dict(
-                torch.load(self.state_dict_path)["kd_optimizer"]
+                torch.load(self.state_dict_path, weights_only=False)["kd_optimizer"]
             )
 
     def distill(
