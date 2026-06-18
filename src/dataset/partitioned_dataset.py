@@ -136,12 +136,15 @@ class PartitionedDataset:
                 )
 
             case "emnist":
-                return torchvision.datasets.EMNIST(
+                dataset = torchvision.datasets.EMNIST(
                     root=root,
-                    split="letters",   # atau balanced
-                    train=split=="train",
+                    split="letters",
+                    train=split == "train",
                     download=True
                 )
+
+                dataset.targets = dataset.targets - 1
+                return dataset
 
             case "cifar10":
                 return torchvision.datasets.CIFAR10(
