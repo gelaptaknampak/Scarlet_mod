@@ -633,13 +633,20 @@ class SCARLETServerHandler(DSFLServerHandler):
         """
         Diperbarui: Mengiterasi SELURUH cache untuk memastikan sinkronisasi absolut
         walaupun data dihapus di luar dari request round ini.
+        
+        PERBAIKAN OOM: Kalkulasi hanya dilakukan untuk klien yang terpilih (sampled_clients) 
+        di ronde ini. Mode 'selective' dan 'static' tetap 100% sinkron sempurna.
         """
         self.cache_update_by_client = {}
-        for client_id in range(self.dataset.num_clients):
+        
+        # UBAH BARIS INI: Ganti range(self.dataset.num_clients) dengan self.sampled_clients
+        for client_id in self.sampled_clients:
             update_indices, stale_indices = [], []
             update_probs: list[torch.Tensor] = []
 
             mock_cache: list[torch.Tensor | None] = self.client_mock_caches[client_id]
+            
+            # Tetap iterasi seluruh panjang cache agar pruning di latar belakang tertangkap
             for i in range(len(mock_cache)):
                 client_cache_prob = mock_cache[i]
                 server_cache_prob = self.cache[i].prob
