@@ -118,8 +118,6 @@ def main(cfg: DictConfig) -> None:  # noqa: C901
 
                 cache_mode=cfg.algorithm.cache_mode,
                 cache_duration=cfg.algorithm.cache_duration,
-                cache_duration_min=cfg.algorithm.cache_duration_min,
-                cache_duration_max=cfg.algorithm.cache_duration_max,
 
                 analysis_dir=analysis_dir,
             )
