@@ -110,15 +110,12 @@ def main(cfg: DictConfig) -> None:  # noqa: C901
                 model_name=cfg.server_model,
                 global_round=cfg.global_round,
                 sample_ratio=cfg.sample_ratio,
-                cuda=torch.cuda.is_available(),
+                cuda=cuda,
                 public_size_per_round=cfg.public_size_per_round,
                 dataset=partitioned_dataset,
                 era_exponent=cfg.algorithm.era_exponent,
                 cache_ratio=cfg.algorithm.cache_ratio,
-
-                cache_mode=cfg.algorithm.cache_mode,
                 cache_duration=cfg.algorithm.cache_duration,
-
                 analysis_dir=analysis_dir,
             )
             trainer = SCARLETParallelClientTrainer(
