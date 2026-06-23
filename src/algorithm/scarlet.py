@@ -462,7 +462,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         # 3. Selective Cache Maintenance (Pruning)
         selective_expired_count = 0
         mean_entropy = 0.0
-        if self.cache_mode == "selective":
+        if self.cache_mode == "selective" and self.round > 0:
             selective_expired_count, mean_entropy = self.selective_cache_maintenance()
         else:
             active_entropies = [c.entropy for c in self.cache if c.prob is not None]
