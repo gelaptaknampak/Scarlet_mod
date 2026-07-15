@@ -35,7 +35,7 @@ class DSFLClientWorkerProcess(BaseClientWorkerProcess):
                 torch.load(self.state_dict_path)["kd_optimizer"]
             )
 
-    def distill(
+    def distill( #local distillation
         self, public_probs: torch.Tensor, public_indices: torch.Tensor
     ) -> float:
         self.model.train()
@@ -48,7 +48,7 @@ class DSFLClientWorkerProcess(BaseClientWorkerProcess):
                 batch_size=self.kd_batch_size,
             )
             public_probs_loader = DataLoader(
-                NonLabelDataset(data=list(torch.unbind(public_probs, dim=0))),
+                NonLabelDataset(data=list(torch.unbind(public_probs, dim=0))), #load smua bagian dari public dataset
                 batch_size=self.kd_batch_size,
             )
             for kd_epoch in range(self.kd_epochs):
@@ -56,10 +56,10 @@ class DSFLClientWorkerProcess(BaseClientWorkerProcess):
                     data, probs = data.to(self.device), probs.to(self.device)
 
                     output = F.log_softmax(self.model(data), dim=1)
-                    kd_loss = self.kd_criterion(output, probs.squeeze(1))
+                    kd_loss = self.kd_criterion(output, probs.squeeze(1)) #kullbeck lieber
 
                     self.kd_optimizer.zero_grad()
-                    kd_loss.backward()
+                    kd_loss.backward() #gradient
                     self.kd_optimizer.step()
                     if kd_epoch == self.kd_epochs - 1:
                         epoch_loss += kd_loss.item() * data.size(0)

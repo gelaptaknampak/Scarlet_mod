@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, Subset
 import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
+import logging
 
 from algorithm.dsfl import (
     DSFLClientWorkerProcess,
@@ -34,9 +35,9 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
             None for _ in range(self.dataset.public_size)
         ]
         if self.state_dict_path.exists():
-            self.cache = torch.load(self.state_dict_path)["cache"]
+            self.cache = torch.load(self.state_dict_path, weights_only=False)["cache"]
             self.kd_optimizer.load_state_dict(
-                torch.load(self.state_dict_path)["kd_optimizer"]
+                torch.load(self.state_dict_path, weights_only=False)["kd_optimizer"]
             )
 
         self.metrics_dir = self.analysis_dir.joinpath("metrics")
@@ -63,9 +64,6 @@ class SCARLETClientWorkerProcess(DSFLClientWorkerProcess):
     def update_cache(
         self, indices: torch.Tensor, probs: torch.Tensor, stale_indices: torch.Tensor
     ):
-        self.round_entropy = []
-        self.round_freshness = []
-        self.round_ttl = []
         if stale_indices.numel() != 0:
             for index in stale_indices:
                 self.cache[int(index.item())] = None
@@ -321,6 +319,7 @@ class SCARLETParallelClientTrainer(DSFLParallelClientTrainer):
 
 class ServerCache(NamedTuple):
     prob: torch.Tensor | None
+    entropy: float
     round: int
     ttl: int
 
@@ -336,9 +335,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         dataset: PartitionedDataset,
         era_exponent: float,
         cache_ratio: float,
-        cache_duration_min: int,
-        cache_duration_max: int,
-        cache_mode: str,  # adaptive | static
+        cache_mode: str,  # static | selective
         cache_duration: int,
         analysis_dir: Path,
     ):
@@ -351,18 +348,19 @@ class SCARLETServerHandler(DSFLServerHandler):
             era_exponent,
             dataset,
         )
+        self.cuda = cuda and torch.cuda.is_available()
+        self.device = torch.device("cuda" if self.cuda else "cpu")
+        
         self.public_probs = torch.empty(0)
         self.public_indices = torch.empty(0)
         self.next_public_indices = torch.empty(0)
         self.new_cache = torch.empty(0)
         self.era_exponent = era_exponent
         self.cache_ratio = cache_ratio
-        self.cache_duration_min = cache_duration_min
-        self.cache_duration_max = cache_duration_max
         self.cache_mode = cache_mode
         self.cache_duration = cache_duration
         self.cache: list[ServerCache] = [
-            ServerCache(prob=None, round=0, ttl=0)
+            ServerCache(prob=None, entropy=0.0, round=0, ttl=0)
             for _ in range(self.dataset.public_size)
         ]
         self.client_mock_caches: list[list[torch.Tensor | None]] = [
@@ -388,9 +386,6 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.public_val_probs = torch.empty(0)
         self.public_val_indices = torch.empty(0)
         self.next_public_val_indices = torch.empty(0)
-        self.round_entropy = []
-        self.round_freshness = []
-        self.round_ttl = []
 
         self.set_next_public_indices()
     
@@ -406,18 +401,22 @@ class SCARLETServerHandler(DSFLServerHandler):
 
         super().set_next_public_indices()
 
-        super().set_next_public_indices()
         next_request_indices = []
         self.next_cached_indices = []
         next_public_indices = self.next_public_indices.tolist()
+        
         for i in next_public_indices:
-            if (
-                self.cache[i].prob is not None
-                and self.cache[i].round + self.cache[i].ttl > self.round
-            ):
-                self.next_cached_indices.append(i)
+            if self.cache[i].prob is not None:
+                if self.cache_mode == "static":
+                    if self.cache[i].round + self.cache[i].ttl > self.round:
+                        self.next_cached_indices.append(i)
+                    else:
+                        next_request_indices.append(i)
+                elif self.cache_mode == "selective":
+                    self.next_cached_indices.append(i)
             else:
                 next_request_indices.append(i)
+                
         self.next_public_indices = torch.tensor(next_request_indices)
 
         if self.dataset.validation_ratio > 0:
@@ -428,9 +427,6 @@ class SCARLETServerHandler(DSFLServerHandler):
     def global_update(self, buffer: list[list[torch.Tensor]]) -> None:  # noqa: C901
         probs_list = [ele[0] for ele in buffer]
         indices_list = [ele[1] for ele in buffer]
-        self.round_entropy = []
-        self.round_freshness = []
-        self.round_ttl = []
 
         public_probs_stack = defaultdict(list)
         for probs, indices in zip(probs_list, indices_list):
@@ -439,29 +435,81 @@ class SCARLETServerHandler(DSFLServerHandler):
             for prob, indice in zip(probs, indices):
                 public_probs_stack[indice.item()].append(prob)
 
-        public_probs: list[torch.Tensor] = []
-        public_indices: list[int] = []
+        # 1. Hitung agregasi probabilitas yang baru masuk round ini
+        agg_probs: list[torch.Tensor] = []
+        agg_indices: list[int] = []
         for index, probs_by_index in public_probs_stack.items():
-            public_indices.append(index)
+            agg_indices.append(index)
             mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu()
-            # Enhanced Entropy Reduction Aggregation
             era_prob = mean_prob**self.era_exponent / torch.sum(
                 mean_prob**self.era_exponent
             )
-            public_probs.append(era_prob)
+            agg_probs.append(era_prob)
 
-        # add cached data
+        # Siapkan array sementara untuk memanggil update_cache
+        public_indices = agg_indices.copy()
+        public_probs = agg_probs.copy()
         for i in self.next_cached_indices:
             public_indices.append(i)
             public_probs.append(self.cache[i].prob)
 
-        self._calculate_cache_diff(public_indices)
-        # update cache
+        # LOG: Cache Sebelum Maintenance
+        cache_before = sum(1 for c in self.cache if c.prob is not None)
+
+        # 2. Update cache
         new_cache = self.update_cache(public_probs, public_indices)
 
-        # update global model
+        # 3. Selective Cache Maintenance (Pruning)
+        selective_expired_count = 0
+        mean_entropy = 0.0
+        if self.cache_mode == "selective" and self.round > 0:
+            selective_expired_count, mean_entropy = self.selective_cache_maintenance()
+        else:
+            active_entropies = [c.entropy for c in self.cache if c.prob is not None]
+            mean_entropy = np.mean(active_entropies) if active_entropies else 0.0
+
+        cache_expired_static = sum(1 for c in new_cache if c == CacheType.EXPIRED)
+        total_expired = cache_expired_static + selective_expired_count
+
+        # 4. BENTUK ULANG (Rebuild Array) agar hanya cache yang bertahan yang di-training
+        final_public_indices = []
+        final_public_probs = []
+        final_new_cache = []
+
+        # Masukkan hasil agregasi round ini (walaupun kalaupun diprune, ini wajib ditrain karena ini request client)
+        for i in range(len(agg_indices)):
+            idx = agg_indices[i]
+            prob = agg_probs[i]
+            c_type = new_cache[i]
+
+            # Jika data baru sempat di-cache (NEWLY_HIT) lalu langsung disikat oleh maintenance
+            if self.cache_mode == "selective" and self.cache[idx].prob is None:
+                if c_type == CacheType.NEWLY_HIT:
+                    c_type = CacheType.NOT_HIT
+
+            final_public_indices.append(idx)
+            final_public_probs.append(prob)
+            final_new_cache.append(c_type)
+
+        # Masukkan data cache (HANYA yang lolos pruning)
+        start_cached_idx = len(agg_indices)
+        for i in range(start_cached_idx, len(public_indices)):
+            idx = public_indices[i]
+            c_type = new_cache[i]
+            
+            # Jika lolos maintenance
+            if self.cache[idx].prob is not None:
+                if idx not in final_public_indices: # Cegah double index
+                    final_public_indices.append(idx)
+                    final_public_probs.append(self.cache[idx].prob)
+                    final_new_cache.append(c_type)
+
+        # 5. Hitung perbedaan antara server cache dan mock cache milik client
+        self._calculate_cache_diff()
+
+        # 6. Latih global model dengan array baru yang sudah bersih
         self.metrics["public_train_loss"] = self._train_public(
-            public_indices, public_probs
+            final_public_indices, final_public_probs
         )
 
         if self.dataset.validation_ratio > 0.0:
@@ -478,7 +526,6 @@ class SCARLETServerHandler(DSFLServerHandler):
             for index, probs_by_index in val_public_probs_stack.items():
                 val_public_indices.append(index)
                 mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu()
-                # Enhanced Entropy Reduction Aggregation
                 era_prob = mean_prob**self.era_exponent / torch.sum(
                     mean_prob**self.era_exponent
                 )
@@ -490,106 +537,33 @@ class SCARLETServerHandler(DSFLServerHandler):
                 val_public_indices, val_public_probs
             )
 
-        self.public_indices = torch.tensor(public_indices)
+        # 7. Persiapkan paket downlink dengan array baru
+        self.public_indices = torch.tensor(final_public_indices)
         not_already_cached_probs = [
             prob
-            for i, prob in enumerate(public_probs)
-            if new_cache[i] != CacheType.ALREADY_HIT
+            for i, prob in enumerate(final_public_probs)
+            if final_new_cache[i] != CacheType.ALREADY_HIT
         ]
         if len(not_already_cached_probs) == 0:
             self.public_probs = torch.empty(0)
         else:
             self.public_probs = torch.stack(not_already_cached_probs)
-        self.new_cache = torch.tensor([cache.value for cache in new_cache])
+        self.new_cache = torch.tensor([cache.value for cache in final_new_cache])
 
-        # =========================
-        # CACHE LOGGING
-        # =========================
+        # LOG: Sesudah Maintenance
+        active_entropies_after = [c.entropy for c in self.cache if c.prob is not None]
+        cache_after = len(active_entropies_after)
+        avg_entropy = np.mean(active_entropies_after) if active_entropies_after else 0.0
 
-        cache_hit = sum(
-            1 for c in new_cache
-            if c == CacheType.ALREADY_HIT
-        )
-
-        cache_new = sum(
-            1 for c in new_cache
-            if c == CacheType.NEWLY_HIT
-        )
-
-        cache_miss = sum(
-            1 for c in new_cache
-            if c == CacheType.NOT_HIT
-        )
-
-        cache_expired = sum(
-            1 for c in new_cache
-            if c == CacheType.EXPIRED
-        )
-
-        cache_size = sum(
-            1 for c in self.cache
-            if c.prob is not None
-        )
-
-        total_requests = (
-            cache_hit +
-            cache_new +
-            cache_miss +
-            cache_expired
-        )
-
-        hit_rate = (
-            cache_hit / total_requests
-            if total_requests > 0
-            else 0.0
-        )
-
-        active_ttls = [
-            c.ttl
-            for c in self.cache
-            if c.prob is not None
-        ]
-
-        avg_ttl = (
-            np.mean(active_ttls)
-            if len(active_ttls) > 0
-            else 0.0
-        )
-
-        avg_entropy = (
-            np.mean(self.round_entropy)
-            if len(self.round_entropy) > 0
-            else 0.0
-        )
-
-        avg_freshness = (
-            np.mean(self.round_freshness)
-            if len(self.round_freshness) > 0
-            else 0.0
-        )
-
-        avg_new_ttl = (
-            np.mean(self.round_ttl)
-            if len(self.round_ttl) > 0
-            else 0.0
-        )
-
-        print(
+        logging.info(
             f"[Round {self.round}] "
             f"Mode={self.cache_mode} | "
-            f"CacheSize={cache_size} | "
-            f"Hit={cache_hit} | "
-            f"Miss={cache_miss} | "
-            f"Expired={cache_expired} | "
-            f"New={cache_new} | "
-            f"HitRate={hit_rate:.4f} | "
-            f"AvgTTL={avg_ttl:.2f} | "
-            f"AvgNewTTL={avg_new_ttl:.2f} | "
-            f"AvgEntropy={avg_entropy:.4f} | "
-            f"AvgFreshness={avg_freshness:.4f}"
+            f"CacheBefore={cache_before} | "
+            f"MeanEntropy={mean_entropy:.4f} | "
+            f"Expired={total_expired} | "
+            f"CacheAfter={cache_after} | "
+            f"AvgEntropy={avg_entropy:.4f}"
         )
-
-        # =========================
 
         with open(self.csv_path, "a") as f:
             writer = csv.writer(f)
@@ -655,19 +629,28 @@ class SCARLETServerHandler(DSFLServerHandler):
                 val_samples += data.size(0)
         return val_loss / val_samples if val_samples > 0 else 0.0
 
-    def _calculate_cache_diff(self, public_indices: list[int]) -> None:
-        # calculate cache difference for each selected client
+    def _calculate_cache_diff(self) -> None:
+        """
+        Diperbarui: Mengiterasi SELURUH cache untuk memastikan sinkronisasi absolut
+        walaupun data dihapus di luar dari request round ini.
+        
+        PERBAIKAN OOM: Kalkulasi hanya dilakukan untuk klien yang terpilih (sampled_clients) 
+        di ronde ini. Mode 'selective' dan 'static' tetap 100% sinkron sempurna.
+        """
         self.cache_update_by_client = {}
-        for client_id in range(self.dataset.num_clients):
+        
+        # UBAH BARIS INI: Ganti range(self.dataset.num_clients) dengan self.sampled_clients
+        for client_id in self.sampled_clients:
             update_indices, stale_indices = [], []
             update_probs: list[torch.Tensor] = []
 
             mock_cache: list[torch.Tensor | None] = self.client_mock_caches[client_id]
+            
+            # Tetap iterasi seluruh panjang cache agar pruning di latar belakang tertangkap
             for i in range(len(mock_cache)):
-                if i not in public_indices:
-                    continue
                 client_cache_prob = mock_cache[i]
                 server_cache_prob = self.cache[i].prob
+                
                 if client_cache_prob is None and server_cache_prob is not None:
                     update_indices.append(i)
                     update_probs.append(server_cache_prob)
@@ -690,46 +673,33 @@ class SCARLETServerHandler(DSFLServerHandler):
 
     def calculate_entropy(self, prob):
         eps = 1e-12
+        entropy = -torch.sum(prob * torch.log(prob + eps))
+        entropy /= np.log(prob.shape[0])
+        return float(entropy)
 
-        entropy = -torch.sum(
-            prob * torch.log(prob + eps)
-        )
+    def selective_cache_maintenance(self) -> tuple[int, float]:
+        """
+        1. Hitung mean entropy seluruh cache aktif.
+        2. Bandingkan entropy setiap entri cache.
+        3. Hapus entri dengan entropy > mean entropy.
+        Mengembalikan: (jumlah_expired, mean_entropy_sebelum_pruning)
+        """
+        active_entropies = [cache.entropy for cache in self.cache if cache.prob is not None]
+        if not active_entropies:
+            return 0, 0.0
 
-        max_entropy = np.log(prob.shape[0])
+        mean_entropy = float(np.mean(active_entropies))
+        expired_count = 0
 
-        return float(entropy / max_entropy)
-
-    
-    def calculate_adaptive_ttl(self, prob):
-
-        entropy = self.calculate_entropy(prob)
-
-        freshness = 1.0 - entropy
-
-        ttl = (
-            self.cache_duration_min
-            +
-            (self.cache_duration_max
-            - self.cache_duration_min)
-            * freshness
-        )
-
-        self.round_entropy.append(entropy)
-        self.round_freshness.append(freshness)
-        self.round_ttl.append(ttl)
-
-        return max(
-            self.cache_duration_min,
-            int(round(ttl))
-        )
-    
-    def get_cache_ttl(self, prob):
-
-        if self.cache_mode == "static":
-            return self.cache_duration
-
-        return self.calculate_adaptive_ttl(prob)
-
+        for i, cache in enumerate(self.cache):
+            if cache.prob is not None:
+                if cache.entropy > mean_entropy:
+                    self.cache[i] = ServerCache(
+                        prob=None, entropy=0.0, round=self.round, ttl=0
+                    )
+                    expired_count += 1
+                    
+        return expired_count, mean_entropy
 
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
@@ -738,30 +708,45 @@ class SCARLETServerHandler(DSFLServerHandler):
         for i in indices:
             if self.cache[i].prob is None:
                 candidate_indices.append(i)
-        num_selected = max(
-            1,
-            int(self.cache_ratio * len(candidate_indices))
-        )
-        selected_indices = np.random.choice(
-            candidate_indices,
-            num_selected,
-            replace=False,
-        )
+                
+        # PERBAIKAN: Jika mode selective, biarkan SEMUA kandidat masuk dulu 
+        # untuk dievaluasi bersama-sama menggunakan mean entropy (tau).
+        if self.cache_mode == "selective":
+            selected_indices = set(candidate_indices)
+        else:
+            # Mode static tetap pakai gacha (cache_ratio)
+            num_selected = max(1, int(self.cache_ratio * len(candidate_indices))) if candidate_indices else 0
+            selected_indices = set(np.random.choice(candidate_indices, num_selected, replace=False).tolist()) if candidate_indices else set()
+        
         new_cache = []
         for i, prob in zip(indices, probs):
             if self.cache[i].prob is None:
                 if i in selected_indices:
-                    ttl = self.get_cache_ttl(prob)
-                    self.cache[i] = ServerCache(prob=prob, round=self.round, ttl=ttl)
+                    ttl = self.cache_duration if self.cache_mode == "static" else 0
+                    entropy = self.calculate_entropy(prob)
+                    self.cache[i] = ServerCache(
+                        prob=prob, entropy=entropy, round=self.round, ttl=ttl
+                    )
                     new_cache.append(CacheType.NEWLY_HIT)
                 else:
                     new_cache.append(CacheType.NOT_HIT)
             else:
-                if self.round - self.cache[i].round <= self.cache[i].ttl:
+                if self.cache_mode == "static":
+                    if self.round - self.cache[i].round <= self.cache[i].ttl:
+                        new_cache.append(CacheType.ALREADY_HIT)
+                    else:
+                        self.cache[i] = ServerCache(
+                            prob=None, entropy=0.0, round=self.round, ttl=0
+                        )
+                        new_cache.append(CacheType.EXPIRED)
+                elif self.cache_mode == "selective":
+                    # FIXED: Cache probabilitas dan entropy akan selalu diperbarui saat tersentuh
+                    entropy = self.calculate_entropy(prob)
+                    self.cache[i] = ServerCache(
+                        prob=prob, entropy=entropy, round=self.round, ttl=0
+                    )
                     new_cache.append(CacheType.ALREADY_HIT)
-                else:
-                    self.cache[i] = ServerCache(prob=None, round=self.round, ttl=0)
-                    new_cache.append(CacheType.EXPIRED)
+                    
         return new_cache
 
     @property
@@ -776,10 +761,9 @@ class SCARLETServerHandler(DSFLServerHandler):
             downlink_package.append(self.public_val_indices)
             downlink_package.append(self.next_public_val_indices)
 
-        # keep mock cache up-to-date for each selected client
-        public_indices = downlink_package[1]
+        # Diperbarui: Samakan mock cache persis dengan state server terbaru
         for client_id in self.sampled_clients:
-            for i in public_indices:
+            for i in range(len(self.cache)):
                 self.client_mock_caches[client_id][i] = self.cache[i].prob
 
         return downlink_package, self.cache_update_by_client
