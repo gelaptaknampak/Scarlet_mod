@@ -10,8 +10,8 @@ public_size_per_round: 1000
 # Support only for SCARLET
 validation_ratio: 0.0
 sample_ratio: 1.0
-global_round: 200
-num_clients: 100
+global_round: 10
+num_clients: 5
 batch_size: 100
 epochs: 5
 lr: 0.1
