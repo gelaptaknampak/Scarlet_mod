@@ -213,10 +213,10 @@ def scarlet_client_worker(
     if cache_update is not None:
         process.update_cache(cache_update[0], cache_update[1], cache_update[2])
     process.set_cache(new_cache)
-    process.distill(public_probs, public_indices)
+    process.distill(public_probs, public_indices) #local disstil
     if dataset.validation_ratio > 0:
         process.public_validate(val_public_probs, val_public_indices)
-    process.train()
+    process.train() #local train
     if next_indices.numel() == 0:
         probs, indices = torch.empty(0), torch.empty(0)
     else:
@@ -440,8 +440,8 @@ class SCARLETServerHandler(DSFLServerHandler):
         agg_indices: list[int] = []
         for index, probs_by_index in public_probs_stack.items():
             agg_indices.append(index)
-            mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu()
-            era_prob = mean_prob**self.era_exponent / torch.sum(
+            mean_prob = torch.stack(probs_by_index).mean(dim=0).cpu() #average soflabel
+            era_prob = mean_prob**self.era_exponent / torch.sum( #enhanced ERA
                 mean_prob**self.era_exponent
             )
             agg_probs.append(era_prob)
@@ -508,7 +508,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         self._calculate_cache_diff()
 
         # 6. Latih global model dengan array baru yang sudah bersih
-        self.metrics["public_train_loss"] = self._train_public(
+        self.metrics["public_train_loss"] = self._train_public( #global distill
             final_public_indices, final_public_probs
         )
 
@@ -590,7 +590,7 @@ class SCARLETServerHandler(DSFLServerHandler):
                     target = target.cuda(self.device)
                     prob = prob.cuda(self.device)
 
-                output = F.log_softmax(self.model(data), dim=1)
+                output = F.log_softmax(self.model(data), dim=1) #global distill
                 prob = prob.squeeze(1)
                 kd_loss = self.kd_criterion(output, prob, reduction="batchmean")
                 if kd_epoch == self.kd_epochs - 1:
@@ -598,7 +598,7 @@ class SCARLETServerHandler(DSFLServerHandler):
                     epoch_samples += data.size(0)
 
                 self.kd_optimizer.zero_grad()
-                kd_loss.backward()
+                kd_loss.backward() #backpropagation atau gradient
                 self.kd_optimizer.step()
         return epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
 
@@ -639,7 +639,6 @@ class SCARLETServerHandler(DSFLServerHandler):
         """
         self.cache_update_by_client = {}
         
-        # UBAH BARIS INI: Ganti range(self.dataset.num_clients) dengan self.sampled_clients
         for client_id in self.sampled_clients:
             update_indices, stale_indices = [], []
             update_probs: list[torch.Tensor] = []
@@ -671,7 +670,7 @@ class SCARLETServerHandler(DSFLServerHandler):
                 else torch.empty(0),
             ]
 
-    def calculate_entropy(self, prob):
+    def calculate_entropy(self, prob): #perhitungan shannon entropy
         eps = 1e-12
         entropy = -torch.sum(prob * torch.log(prob + eps))
         entropy /= np.log(prob.shape[0])
