@@ -461,12 +461,12 @@ class SCARLETServerHandler(DSFLServerHandler):
 
         # 3. Selective Cache Maintenance (Pruning)
         selective_expired_count = 0
-        mean_entropy = 0.0
+        median_entropy = 0.0
         if self.cache_mode == "selective" and self.round > 0:
-            selective_expired_count, mean_entropy = self.selective_cache_maintenance()
+            selective_expired_count, median_entropy = self.selective_cache_maintenance()
         else:
             active_entropies = [c.entropy for c in self.cache if c.prob is not None]
-            mean_entropy = np.mean(active_entropies) if active_entropies else 0.0
+            median_entropy = np.median(active_entropies) if active_entropies else 0.0
 
         cache_expired_static = sum(1 for c in new_cache if c == CacheType.EXPIRED)
         total_expired = cache_expired_static + selective_expired_count
@@ -559,7 +559,7 @@ class SCARLETServerHandler(DSFLServerHandler):
             f"[Round {self.round}] "
             f"Mode={self.cache_mode} | "
             f"CacheBefore={cache_before} | "
-            f"MeanEntropy={mean_entropy:.4f} | "
+            f"MedianEntropy={median_entropy:.4f} | "
             f"Expired={total_expired} | "
             f"CacheAfter={cache_after} | "
             f"AvgEntropy={avg_entropy:.4f}"
@@ -688,18 +688,18 @@ class SCARLETServerHandler(DSFLServerHandler):
         if not active_entropies:
             return 0, 0.0
 
-        mean_entropy = float(np.mean(active_entropies))
+        median_entropy = float(np.median(active_entropies))
         expired_count = 0
 
         for i, cache in enumerate(self.cache):
             if cache.prob is not None:
-                if cache.entropy > mean_entropy:
+                if cache.entropy > median_entropy:
                     self.cache[i] = ServerCache(
                         prob=None, entropy=0.0, round=self.round, ttl=0
                     )
                     expired_count += 1
                     
-        return expired_count, mean_entropy
+        return expired_count, median_entropy
 
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
