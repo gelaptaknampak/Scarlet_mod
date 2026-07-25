@@ -692,9 +692,10 @@ class SCARLETServerHandler(DSFLServerHandler):
         expired_count = 0
 
         for i, cache in enumerate(self.cache):
+            margin = 0.05
+            threshold = median_entropy + margin
             if cache.prob is not None:
-                margin = 0.05
-                if cache.entropy > median_entropy + margin:
+                if cache.entropy > threshold:
                     self.cache[i] = ServerCache(
                         prob=None, entropy=0.0, round=self.round, ttl=0
                     )
