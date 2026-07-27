@@ -359,6 +359,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.cache_ratio = cache_ratio
         self.cache_mode = cache_mode
         self.cache_duration = cache_duration
+        self.lambda_std = 0.5
         self.cache: list[ServerCache] = [
             ServerCache(prob=None, entropy=0.0, round=0, ttl=0)
             for _ in range(self.dataset.public_size)
@@ -453,23 +454,50 @@ class SCARLETServerHandler(DSFLServerHandler):
             public_indices.append(i)
             public_probs.append(self.cache[i].prob)
 
-        # LOG: Cache Sebelum Maintenance
-        cache_before = sum(1 for c in self.cache if c.prob is not None)
-
         # 2. Update cache
         new_cache = self.update_cache(public_probs, public_indices)
+
+        # LOG: Cache Sebelum Maintenance
+        cache_before = sum(1 for c in self.cache if c.prob is not None)
 
         # 3. Selective Cache Maintenance (Pruning)
         selective_expired_count = 0
         mean_entropy = 0.0
         if self.cache_mode == "selective" and self.round > 0:
-            selective_expired_count, mean_entropy = self.selective_cache_maintenance()
+            (
+                selective_expired_count,
+                mean_entropy,
+                std_entropy,
+                variance_entropy,
+                min_entropy,
+                max_entropy,
+                median_entropy,
+                q1_entropy,
+                q3_entropy,
+                threshold,
+            ) = self.selective_cache_maintenance()
+        
         else:
             active_entropies = [c.entropy for c in self.cache if c.prob is not None]
             mean_entropy = np.mean(active_entropies) if active_entropies else 0.0
 
         cache_expired_static = sum(1 for c in new_cache if c == CacheType.EXPIRED)
         total_expired = cache_expired_static + selective_expired_count
+
+        std_entropy = 0.0
+        variance_entropy = 0.0
+        min_entropy = 0.0
+        max_entropy = 0.0
+        median_entropy = 0.0
+        q1_entropy = 0.0
+        q3_entropy = 0.0
+        threshold = mean_entropy
+
+        # LOG: Cache Setelah Maintenance
+        cache_after = sum(
+            1 for c in self.cache
+            if c.prob is not None
+        )
 
         # 4. BENTUK ULANG (Rebuild Array) agar hanya cache yang bertahan yang di-training
         final_public_indices = []
@@ -555,14 +583,20 @@ class SCARLETServerHandler(DSFLServerHandler):
         cache_after = len(active_entropies_after)
         avg_entropy = np.mean(active_entropies_after) if active_entropies_after else 0.0
 
-        logging.info(
+        logger.info(
             f"[Round {self.round}] "
-            f"Mode={self.cache_mode} | "
-            f"CacheBefore={cache_before} | "
-            f"MeanEntropy={mean_entropy:.4f} | "
-            f"Expired={total_expired} | "
-            f"CacheAfter={cache_after} | "
-            f"AvgEntropy={avg_entropy:.4f}"
+            f"CacheBefore={cache_before} "
+            f"CacheAfter={cache_after}"
+            f"Expired={selective_expired_count} "
+            f"Threshold={threshold:.4f} | "
+            f"Mean={mean_entropy:.4f} "
+            f"Std={std_entropy:.4f} "
+            f"Var={variance_entropy:.6f} "
+            f"Median={median_entropy:.4f} "
+            f"Min={min_entropy:.4f} "
+            f"Q1={q1_entropy:.4f} "
+            f"Q3={q3_entropy:.4f} "
+            f"Max={max_entropy:.4f}"
         )
 
         with open(self.csv_path, "a") as f:
@@ -676,29 +710,65 @@ class SCARLETServerHandler(DSFLServerHandler):
         entropy /= np.log(prob.shape[0])
         return float(entropy)
 
-    def selective_cache_maintenance(self) -> tuple[int, float]:
-        """
-        1. Hitung mean entropy seluruh cache aktif.
-        2. Bandingkan entropy setiap entri cache.
-        3. Hapus entri dengan entropy > mean entropy.
-        Mengembalikan: (jumlah_expired, mean_entropy_sebelum_pruning)
-        """
-        active_entropies = [cache.entropy for cache in self.cache if cache.prob is not None]
-        if not active_entropies:
-            return 0, 0.0
+    def selective_cache_maintenance(self) -> tuple[int, float, float]:
+        # """
+        # Selective cache expiration menggunakan Mean + Standard Deviation.
+        # Threshold = mean_entropy + lambda * std_entropy
 
-        mean_entropy = float(np.mean(active_entropies))
+        # Return: (expired_count, mean_entropy, threshold)
+        # """
+
+        active_entropies = [cache.entropy for cache in self.cache if cache.prob is not None]
+
+        if not active_entropies:
+            return 0, 0.0, 0.0
+
+        entropy_array = np.asarray(active_entropies, dtype=np.float32)
+
+        mean_entropy = float(np.mean(entropy_array))
+        std_entropy = float(np.std(entropy_array))
+
+        median_entropy = float(np.median(entropy_array))
+
+        min_entropy = float(np.min(entropy_array))
+        max_entropy = float(np.max(entropy_array))
+
+        q1_entropy = float(np.percentile(entropy_array, 25))
+        q3_entropy = float(np.percentile(entropy_array, 75))
+
+        variance_entropy = float(np.var(entropy_array))
+
+        # Adaptive threshold
+        threshold = mean_entropy + self.lambda_std * std_entropy
+
         expired_count = 0
 
         for i, cache in enumerate(self.cache):
-            if cache.prob is not None:
-                if cache.entropy > mean_entropy:
-                    self.cache[i] = ServerCache(
-                        prob=None, entropy=0.0, round=self.round, ttl=0
-                    )
-                    expired_count += 1
-                    
-        return expired_count, mean_entropy
+
+            if cache.prob is None:
+                continue
+
+            if cache.entropy > threshold:
+                self.cache[i] = ServerCache(
+                    prob=None,
+                    entropy=0.0,
+                    round=self.round,
+                    ttl=0,
+                )
+                expired_count += 1
+
+        return (
+            expired_count,
+            mean_entropy,
+            std_entropy,
+            variance_entropy,
+            min_entropy,
+            max_entropy,
+            median_entropy,
+            q1_entropy,
+            q3_entropy,
+            threshold,
+        )
 
     def update_cache(
         self, probs: list[torch.Tensor], indices: list[int]
