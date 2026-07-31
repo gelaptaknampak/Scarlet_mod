@@ -583,7 +583,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         cache_after = len(active_entropies_after)
         avg_entropy = np.mean(active_entropies_after) if active_entropies_after else 0.0
 
-        logger.info(
+        logging.info(
             f"[Round {self.round}] "
             f"CacheBefore={cache_before} "
             f"CacheAfter={cache_after}"
