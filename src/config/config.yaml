@@ -1,25 +1,36 @@
 private_task: mnist
 public_task: emnist
+
 server_model: lenet5
 client_model: lenet5
+
 partition: client_inner_dirichlet
 dir_alpha: 0.3
+
 seed: 42
-public_size: 10000
-public_size_per_round: 1000
+
+public_size: 5000
+public_size_per_round: 500
+
 # Support only for SCARLET
 validation_ratio: 0.0
+
 sample_ratio: 1.0
-global_round: 10
-num_clients: 5
+
+global_round: 100
+num_clients: 50
+
 batch_size: 100
 epochs: 5
 lr: 0.1
+
 kd_epochs: 5
 kd_batch_size: 100
 kd_lr: 0.1
+
 test_batch_size: 500
 server_test_batch_size: 1000
-num_parallels: 10
+
+num_parallels: 1
 comment: ""
 data_dir: "./data"
