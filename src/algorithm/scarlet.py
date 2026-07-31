@@ -359,7 +359,6 @@ class SCARLETServerHandler(DSFLServerHandler):
         self.cache_ratio = cache_ratio
         self.cache_mode = cache_mode
         self.cache_duration = cache_duration
-        self.lambda_std = 0.5
         self.cache: list[ServerCache] = [
             ServerCache(prob=None, entropy=0.0, round=0, ttl=0)
             for _ in range(self.dataset.public_size)
@@ -463,6 +462,15 @@ class SCARLETServerHandler(DSFLServerHandler):
         # 3. Selective Cache Maintenance (Pruning)
         selective_expired_count = 0
         mean_entropy = 0.0
+        std_entropy = 0.0
+        variance_entropy = 0.0
+        min_entropy = 0.0
+        max_entropy = 0.0
+        median_entropy = 0.0
+        q1_entropy = 0.0
+        q3_entropy = 0.0
+        threshold = 0.0
+
         if self.cache_mode == "selective" and self.round > 0:
             (
                 selective_expired_count,
@@ -476,22 +484,20 @@ class SCARLETServerHandler(DSFLServerHandler):
                 q3_entropy,
                 threshold,
             ) = self.selective_cache_maintenance()
-        
         else:
             active_entropies = [c.entropy for c in self.cache if c.prob is not None]
-            mean_entropy = np.mean(active_entropies) if active_entropies else 0.0
+            if active_entropies:
+                entropy_array = np.asarray(active_entropies)
 
-        cache_expired_static = sum(1 for c in new_cache if c == CacheType.EXPIRED)
-        total_expired = cache_expired_static + selective_expired_count
-
-        std_entropy = 0.0
-        variance_entropy = 0.0
-        min_entropy = 0.0
-        max_entropy = 0.0
-        median_entropy = 0.0
-        q1_entropy = 0.0
-        q3_entropy = 0.0
-        threshold = mean_entropy
+                mean_entropy = float(np.mean(entropy_array))
+                std_entropy = float(np.std(entropy_array))
+                variance_entropy = float(np.var(entropy_array))
+                min_entropy = float(np.min(entropy_array))
+                max_entropy = float(np.max(entropy_array))
+                median_entropy = float(np.median(entropy_array))
+                q1_entropy = float(np.percentile(entropy_array, 25))
+                q3_entropy = float(np.percentile(entropy_array, 75))
+                threshold = mean_entropy
 
         # LOG: Cache Setelah Maintenance
         cache_after = sum(
@@ -713,7 +719,7 @@ class SCARLETServerHandler(DSFLServerHandler):
     def selective_cache_maintenance(self) -> tuple[int, float, float]:
         # """
         # Selective cache expiration menggunakan Mean + Standard Deviation.
-        # Threshold = mean_entropy + lambda * std_entropy
+        # Threshold = mean_entropy 
 
         # Return: (expired_count, mean_entropy, threshold)
         # """
@@ -739,7 +745,7 @@ class SCARLETServerHandler(DSFLServerHandler):
         variance_entropy = float(np.var(entropy_array))
 
         # Adaptive threshold
-        threshold = mean_entropy + self.lambda_std * std_entropy
+        threshold = mean_entropy
 
         expired_count = 0
 
