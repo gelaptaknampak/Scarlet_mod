@@ -15,6 +15,15 @@ from dataset.tiny_imagenet_200 import TinyImageNet
 
 ROOT_DIR = Path(__file__).resolve().parents[0]
 
+NUM_CHANNELS = {
+    "mnist": 1,
+    "emnist": 1,
+    "cifar10": 3,
+    "cifar100": 3,
+    "tiny-imagenet-200": 3,
+    "caltech256": 3,
+}
+
 CLASS_NUM = {
     "cifar10": 10,
     "cifar100": 100,
@@ -98,30 +107,45 @@ class PartitionedDataset:
         self._prepare()
 
     def _get_transform(self, task: str, train: bool):
-        # --- PERBAIKAN 3: Normalisasi Dinamis & Aman untuk Semua Dataset ---
+
         image_size = ORIGINAL_IMAGE_SIZE[task]
+
         if image_size is None:
-            image_size = 64  # Default untuk caltech256
-            
-        num_channels = 1 if task in ["mnist", "emnist"] else 3
-        
+            image_size = 64
+
+        num_channels = NUM_CHANNELS[task]
+
         transform_list = [
             SafeToTensor(),
             transforms.Resize((image_size, image_size)),
-            transforms.Normalize((0.5,) * num_channels, (0.5,) * num_channels),
         ]
-        
+
         if train:
+
             padding = 8 if image_size == 64 else 4
 
-            if task in ["mnist", "emnist"]:
-                transform_list.insert(2, transforms.RandomCrop(image_size, padding=padding))
-            else:
-                transform_list.insert(2, transforms.RandomHorizontalFlip(p=0.5))
-                transform_list.insert(3, transforms.RandomCrop(image_size, padding=padding))
+            if num_channels == 3:
 
-            if task == "caltech256":
-                transform_list = [GrayscaleToRGB()] + transform_list
+                transform_list.extend([
+                    transforms.RandomHorizontalFlip(),
+                    transforms.RandomCrop(image_size, padding=padding),
+                ])
+
+            else:
+
+                transform_list.append(
+                    transforms.RandomCrop(image_size, padding=padding)
+                )
+
+        transform_list.append(
+            transforms.Normalize(
+                (0.5,) * num_channels,
+                (0.5,) * num_channels,
+            )
+        )
+
+        if task == "caltech256":
+            transform_list.insert(0, GrayscaleToRGB())
 
         return transforms.Compose(transform_list)
 
